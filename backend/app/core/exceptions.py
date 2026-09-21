@@ -45,3 +45,8 @@ class DependencyError(ClaimAssistError):
     code = "DEPENDENCY_UNAVAILABLE"
     message = "The service is temporarily unavailable."
     status_code = 503
+
+
+class DatabaseUnavailableError(DependencyError):
+    code = "DATABASE_UNAVAILABLE"
+    message = "The database service is temporarily unavailable."

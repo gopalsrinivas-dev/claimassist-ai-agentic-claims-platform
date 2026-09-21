@@ -9,9 +9,12 @@ description = "ClaimAssist AI backend foundation"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "alembic==1.20.0",
     "fastapi==0.141.1",
     "pydantic==2.13.5",
     "pydantic-settings==2.15.0",
+    "psycopg[binary]==3.3.6",
+    "SQLAlchemy==2.0.54",
     "starlette==1.6.0",
     "uvicorn==0.53.0",
 ]
@@ -32,7 +35,8 @@ include = ["app*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "--strict-config --strict-markers -ra --basetemp=tmp --cov=app --cov-branch --cov-report=term-missing --cov-fail-under=80"
+addopts = "--strict-config --strict-markers -ra --basetemp=.tmp/pytest --cov=app --cov-branch --cov-report=term-missing --cov-fail-under=80"
+markers = ["postgres_integration: requires an explicitly configured disposable PostgreSQL database"]
 filterwarnings = [
     "error",
     # Starlette 1.6 uses this upstream AnyIO alias; keep the warning visible.

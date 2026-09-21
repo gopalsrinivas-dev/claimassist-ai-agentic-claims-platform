@@ -15,6 +15,7 @@ EVENT_FIELDS = (
     "response_completed",
     "error_code",
     "app_env",
+    "dependency",
 )
 
 

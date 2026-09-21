@@ -86,7 +86,7 @@ def test_environment_overrides_dotenv(tmp_path: Path, monkeypatch: pytest.Monkey
 
 
 def test_example_environment_is_usable(monkeypatch: pytest.MonkeyPatch) -> None:
-    example = Path(__file__).resolve().parents[2] / ".env.example"
+    example = Path(__file__).resolve().parents[1] / ".env.example"
     monkeypatch.setitem(Settings.model_config, "env_file", example)
     assert Settings().app_name == "ClaimAssist AI"
 

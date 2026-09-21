@@ -1,8 +1,8 @@
-# ClaimAssist backend — Day 11
+# ClaimAssist backend
 
 Python 3.12+ FastAPI foundation. This package implements operational probes,
-configuration, request telemetry, and error handling. Business services, persistence,
-authentication mechanisms, workers, and AI integrations belong to later days.
+configuration, request telemetry, error handling, and PostgreSQL infrastructure.
+Authentication mechanisms, business services, workers, and AI integrations are outside this foundation.
 
 ## Local setup
 
@@ -12,7 +12,7 @@ From the repository root in PowerShell:
 python -m venv backend/.venv
 .\backend\.venv\Scripts\python.exe -m pip install -r backend/requirements-dev.lock
 .\backend\.venv\Scripts\python.exe -m pip install --no-build-isolation --no-index --editable './backend[dev]'
-Copy-Item .env.example .env
+Copy-Item backend/.env.example backend/.env
 .\backend\.venv\Scripts\python.exe -m uvicorn app.main:create_app --factory --app-dir backend --no-access-log
 ```
 
@@ -21,7 +21,12 @@ launchers and activation scripts can embed absolute paths. From the repository
 root, activate it with `. .\backend\.venv\Scripts\Activate.ps1` and confirm
 `python -c "import sys; print(sys.executable)"` resolves to that environment.
 
-Copy the example only when `.env` does not already exist. The default address is
+Copy the example only when `backend/.env` does not already exist. Create a local
+PostgreSQL database named `claimassist_db` and supply its connection URL through
+`DATABASE_URL` in `backend/.env` before startup. No connection values are embedded
+in application code. Apply the migration from `backend/` with
+`python -m alembic upgrade head`, using the activated environment.
+The default address is
 `http://127.0.0.1:8000`; use Uvicorn's `--host` and `--port` options as needed.
 Stop with Ctrl+C to run lifespan shutdown. Keep `--no-access-log`: raw server access
 logs include URLs and query strings that the application deliberately excludes.
@@ -31,7 +36,7 @@ the development lock, which includes the pinned build backend.
 
 ## Configuration
 
-`Settings` reads environment variables first, then the repository-root `.env`,
+`Settings` reads environment variables first, then `backend/.env`,
 then safe defaults. There is no settings singleton or import-time app construction.
 For an installed package outside this checkout, supply environment variables or an
 explicit dotenv path through `Settings(_env_file=...)` when composing the factory.
@@ -44,14 +49,21 @@ explicit dotenv path through `Settings(_env_file=...)` when composing the factor
 | `API_V1_PREFIX` | `/api/v1`; validated path segments |
 | `CORS_ALLOWED_ORIGINS` | `[]`; explicit origins, e.g. `["http://localhost:3000"]` |
 | `CORS_ALLOW_CREDENTIALS` | `false` |
-| `CORS_ALLOWED_METHODS` | `["GET"]`; Day 11 accepts GET/HEAD/OPTIONS |
+| `CORS_ALLOWED_METHODS` | `["GET"]`; accepts GET/HEAD/OPTIONS |
 | `CORS_ALLOWED_HEADERS` | `["Content-Type","X-Correlation-ID"]` |
 | `LOG_LEVEL` | `INFO`; DEBUG/INFO/WARNING/ERROR/CRITICAL |
+| `DATABASE_URL` | Required secret; PostgreSQL URL with explicit host and database; no fallback connection |
+| `SQL_ECHO` | `false`; opt-in sanitized query timing events, never native SQL text/parameters |
 
 Lists use JSON arrays. Empty environment values use defaults. Wildcard origins,
 credential-bearing URLs, invalid paths and invalid setting values fail startup.
-The shared `.env.example` retains future variables; Day 11 neither loads those
-dependencies nor requires their credentials. Add their required-setting validation
+The shared `.env.example` retains future variables; the foundation neither loads those
+dependencies nor requires their credentials. Its empty `DATABASE_URL` must be filled
+locally. Both `postgresql://` and `postgresql+psycopg://` select the psycopg 3 driver.
+Use percent encoding for reserved characters in credentials. The URL is stored as
+`SecretStr`, excluded from settings repr, and masked in JSON. Settings validation
+redacts inputs in text, structured errors, and JSON, including model-level errors.
+Add other required-setting validation
 when the corresponding integration is implemented.
 
 ## Architecture and probes
@@ -62,12 +74,65 @@ when the corresponding integration is implemented.
 - `app/core/`: immutable settings, exception taxonomy, lifecycle readiness.
 - `app/middleware/`: pure ASGI context, CORS, and unexpected-error boundaries.
 - `app/observability/`: context variables and structured logging.
+- `app/db/`: declarative metadata, shared engine/session factories, readiness, safe telemetry.
+- `alembic/`: migration environment, revision template, and empty foundation revision.
 
 `GET /health` returns `200 {"status":"ok"}` for a responsive process.
-`GET /ready` returns `200 {"status":"ready"}` after lifespan startup; before startup
-and after shutdown it returns a `503 DEPENDENCY_UNAVAILABLE` error envelope.
-This is application readiness only. No database, queue, storage or provider checks
-are claimed. OpenAPI is available at `/openapi.json`, with Swagger UI at `/docs`.
+`GET /ready` runs a read-only connectivity query after lifespan startup. It returns
+`200 {"status":"ready"}` when PostgreSQL responds, or a controlled
+`503 DATABASE_UNAVAILABLE` envelope on database failure. Before startup and after
+shutdown it returns `503 DEPENDENCY_UNAVAILABLE`. The sync probe runs in FastAPI's
+thread pool, leaving the async event loop responsive. Connections are always released.
+Readiness checks connectivity, not migration revision or business schema state.
+OpenAPI is available at `/openapi.json`, with Swagger UI at `/docs`.
+
+## Database lifecycle and migrations
+
+The lifespan constructs one lazy PostgreSQL engine and session factory per app,
+then disposes the pool on shutdown. Importing modules or constructing the app does
+not connect. The pool allows 5 connections plus 5 overflow connections, waits at
+most 5 seconds for checkout, validates pooled connections, and sets 5-second
+connection and statement timeouts. There is no application retry loop or write
+retry; SQLAlchemy's pool may replace stale connections during pre-ping. These
+timeouts bound individual operations, not a strict end-to-end readiness deadline;
+DNS resolution and a network blackhole can depend on OS socket timeouts.
+
+Use `DatabaseSession` in synchronous endpoints or `transaction(session_factory)`
+at a service composition boundary. Work succeeds -> commit; body/commit failure
+-> rollback; every exit -> close. Non-database exceptions propagate. SQLAlchemy
+connectivity/pool failures become controlled application errors without driver
+messages; other SQLAlchemy failures propagate to the centralized safe 500 boundary. The
+dependency uses `scope="function"` so commit finishes before a success response
+can be sent. Services must not create their own engines/sessions, commit inside
+this unit of work, or hold transactions across slow external calls. Synchronous
+database operations must not run directly on the async event loop.
+
+`Base.metadata` defines stable names for indexes, primary/foreign keys, unique
+constraints, and explicitly named check constraints. It contains no mapped tables.
+UUID IDs, UTC timestamps and fixed-precision money remain the field dictionary
+contract for future domain models. The foundation adds no columns, entities, or pgvector objects.
+
+Alembic imports the same `Settings`, engine constructor, and metadata. Its INI
+contains no URL, and it does not interpolate credentials through ConfigParser.
+Revision `20260921_0001` intentionally has empty upgrade/downgrade functions.
+Alembic creates its own `alembic_version` table; downgrade to base removes the
+revision row, leaving an empty version table. Only that infrastructure is created.
+Migrations run explicitly, never automatically during application startup.
+
+From `backend/`, with the virtual environment activated:
+
+```powershell
+python -m alembic heads
+python -m alembic upgrade head --sql
+python -m alembic upgrade head
+python -m alembic current
+python -m alembic check
+```
+
+To verify reversibility on a disposable PostgreSQL database, set `DATABASE_URL`
+to that database, run `upgrade head`, `downgrade base`, then `upgrade head`.
+Check that only `alembic_version` exists and its single row is `20260921_0001`.
+Offline downgrade rendering is `python -m alembic downgrade 20260921_0001:base --sql`.
 
 ## Logs and correlation
 
@@ -94,6 +159,15 @@ It excludes exception messages, source lines, local values, chained errors, full
 file paths, bodies, document content, credentials and healthcare/member data.
 Logs are ready for a JSON collector; no OpenTelemetry exporter is installed.
 
+Database successes emit `database.readiness.completed` with duration and dependency
+name; errors log once at the existing HTTP boundary with the safe error code,
+dependency name, and request correlation context. Alembic failures use
+`database.migration.failed`. `SQL_ECHO=true` enables `database.query.completed`
+timing events at INFO. Native SQLAlchemy echo stays disabled even when this flag
+is true, since hiding parameters alone would not hide sensitive SQL literals.
+Raw SQLAlchemy engine/pool and psycopg logging are suppressed centrally. No URL,
+SQL statement, parameter, result row, or raw database exception is logged.
+
 ## Errors and CORS
 
 All application/framework errors, invalid request bodies, rejected CORS preflights,
@@ -112,6 +186,8 @@ and unexpected failures use:
 | `ResourceNotFoundError` | 404 | `RESOURCE_NOT_FOUND` |
 | `ConflictError` | 409 | `CONFLICT` |
 | `DependencyError` | 503 | `DEPENDENCY_UNAVAILABLE` |
+| `DatabaseUnavailableError` / SQLAlchemy connectivity or pool failure | 503 | `DATABASE_UNAVAILABLE` |
+| Unexpected SQLAlchemy failure | 500 | `INTERNAL_ERROR` |
 | Unexpected exception / invalid response schema | 500 | `INTERNAL_ERROR` |
 
 Expected errors use fixed, reviewed class-level messages, ignoring exception
@@ -139,11 +215,32 @@ From `backend/`, using the repository virtual environment:
 .\.venv\Scripts\python.exe -m mypy .
 .\.venv\Scripts\python.exe -m pytest
 .\.venv\Scripts\python.exe -m pip check
+.\.venv\Scripts\python.exe -m pip_audit
 .\.venv\Scripts\python.exe -m pip_audit -r requirements-dev.lock --no-deps --disable-pip --cache-dir .tmp/audit
 ```
 
-Pytest reserves `backend/tmp/` for temporary test data and recreates it on each run.
-Tests ignore developer settings and never use external services or real patient data.
+Pytest reserves `backend/.tmp/pytest/` for temporary test data and recreates it on each run.
+The test harness creates the parent `.tmp/` when absent, including after cleanup.
+Unit tests ignore developer settings and mock engine construction at the application
+lifespan boundary. They need neither a running server nor psycopg/libpq to create
+`TestClient`. Production startup still constructs the real PostgreSQL engine.
+Run `python -m pytest` for the unit suite; PostgreSQL integration tests are explicitly
+skipped unless `--postgres-integration` is supplied. No test uses real patient data.
+
+For real driver, transaction, readiness, sanitized SQL telemetry, and migration
+verification, supply `DATABASE_URL` as a process environment variable pointing to
+a **disposable PostgreSQL database with no business tables**, then run:
+
+```powershell
+python -m pytest --postgres-integration
+```
+
+This runs the entire suite including the PostgreSQL tests. The integration suite
+does not read the developer's dotenv connection implicitly, performs a baseline
+upgrade/downgrade/upgrade, and rejects databases containing business tables or an
+unexpected migration revision. Transaction tests use a connection-local temporary
+table and remove it afterward. Only Alembic's version table persists. The suite
+uses PostgreSQL exclusively; there is no SQLite substitute.
 Coverage includes branches and enforces at least 80%. Ruff supplies formatting,
 lint and security rules; mypy runs in strict mode on application and test code.
 Warnings are errors except a specifically identified Starlette 1.6 / AnyIO
@@ -152,3 +249,33 @@ Warnings are errors except a specifically identified Starlette 1.6 / AnyIO
 The lock files pin the runtime and development dependency sets. Audit uses the
 network to query vulnerability records; it is separate from the offline test suite.
 Existing project design documentation remains the implementation source of truth.
+
+### Windows driver compatibility
+
+The psycopg binary extra normally bundles libpq. If Windows Application Control
+blocks that wheel, use psycopg's supported pure Python implementation with a
+locally installed PostgreSQL client library. Add that installation's `bin` directory
+to the process PATH and set `$env:PSYCOPG_IMPL = 'python'` before running Python.
+For this Windows workstation, from `backend/` with the virtual environment active:
+
+```powershell
+$postgresBin = 'D:\Workspace\softwares\PostgreSQL\18\bin'
+if (!(Test-Path (Join-Path $postgresBin 'libpq.dll'))) {
+    throw 'The PostgreSQL client library is not installed at the selected location.'
+}
+$env:PATH = "$postgresBin;$env:PATH"
+$env:PSYCOPG_IMPL = 'python'
+python -c "import psycopg; print(psycopg.pq.__impl__, psycopg.pq.version())"
+```
+
+Apply this in **each shell** used to run the application, Alembic, or PostgreSQL
+integration tests. Setting `PSYCOPG_IMPL=python` alone is insufficient: libpq and
+its dependent DLLs must be discoverable. Adjust the documented path on other
+machines. Unit-only tests require neither this PATH change nor a PostgreSQL server.
+The application contains no machine-specific path or driver-implementation override.
+Do not disable machine security policy. This workstation's verification used
+that supported driver option with PostgreSQL 18.4.
+
+Environment variables take priority over dotenv: an unrelated process-level
+`DEBUG` value can fail boolean validation. Use a valid boolean or remove that
+process override so `backend/.env` supplies it.

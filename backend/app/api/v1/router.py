@@ -1,4 +1,4 @@
-"""Composition point for future versioned routers; no Day 12 endpoints."""
+"""Composition point for versioned application routers."""
 
 from fastapi import APIRouter
 

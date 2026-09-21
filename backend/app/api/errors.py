@@ -5,11 +5,13 @@ from http import HTTPStatus
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
+from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse
 
 from app.api.schemas import ErrorDetail, ErrorResponse
-from app.core.exceptions import ClaimAssistError
+from app.core.exceptions import ClaimAssistError, DatabaseUnavailableError
+from app.db.errors import DATABASE_AVAILABILITY_ERRORS
 
 logger = logging.getLogger("claimassist.errors")
 
@@ -40,7 +42,10 @@ def error_response(correlation_id: str, status: int, code: str, message: str) ->
 
 async def application_error_handler(request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, ClaimAssistError)
-    logger.warning("request.error", extra={"error_code": exc.code, "status_code": exc.status_code})
+    metadata: dict[str, object] = {"error_code": exc.code, "status_code": exc.status_code}
+    if isinstance(exc, DatabaseUnavailableError):
+        metadata["dependency"] = "database"
+    logger.warning("request.error", extra=metadata)
     return error_response(request.state.correlation_id, exc.status_code, exc.code, exc.message)
 
 
@@ -69,9 +74,14 @@ async def http_error_handler(request: Request, exc: Exception) -> JSONResponse:
 
 
 async def unexpected_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    if isinstance(exc, DATABASE_AVAILABILITY_ERRORS):
+        return await application_error_handler(request, DatabaseUnavailableError())
+    metadata: dict[str, object] = {"error_code": "INTERNAL_ERROR", "status_code": 500}
+    if isinstance(exc, SQLAlchemyError):
+        metadata["dependency"] = "database"
     logger.error(
         "request.error",
-        extra={"error_code": "INTERNAL_ERROR", "status_code": 500},
+        extra=metadata,
         exc_info=(type(exc), exc, exc.__traceback__),
     )
     return error_response(
@@ -83,3 +93,4 @@ def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(ClaimAssistError, application_error_handler)
     app.add_exception_handler(RequestValidationError, validation_error_handler)
     app.add_exception_handler(HTTPException, http_error_handler)
+    app.add_exception_handler(SQLAlchemyError, unexpected_error_handler)
