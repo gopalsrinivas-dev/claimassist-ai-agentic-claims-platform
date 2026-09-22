@@ -110,7 +110,7 @@ def test_engine_and_session_factory(settings: Settings, engine_constructor: Magi
             assert session.bind is engine
             assert session.autoflush is False
             assert session.expire_on_commit is False
-        assert not Base.metadata.tables
+        assert Base.metadata.naming_convention["pk"] == "pk_%(table_name)s"
     finally:
         engine.dispose()
 

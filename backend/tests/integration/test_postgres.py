@@ -1,12 +1,10 @@
 """Opt-in verification against disposable PostgreSQL, never a SQLite substitute."""
 
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
-from alembic.script import ScriptDirectory
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine, event, inspect, text
 from sqlalchemy.pool import QueuePool
@@ -21,22 +19,6 @@ pytestmark = pytest.mark.postgres_integration
 BASELINE_REVISION = "20260921_0001"
 
 
-@pytest.fixture
-def postgres_engine(postgres_settings: Settings) -> Iterator[Engine]:
-    engine = create_database_engine(postgres_settings)
-    try:
-        assert engine.dialect.name == "postgresql"
-        assert set(inspect(engine).get_table_names()) <= {"alembic_version"}, (
-            "Integration tests require a disposable database without business tables"
-        )
-        with engine.connect() as connection:
-            current = MigrationContext.configure(connection).get_current_revision()
-            assert current in {None, BASELINE_REVISION}, "Unexpected database migration revision"
-        yield engine
-    finally:
-        engine.dispose()
-
-
 def test_baseline_upgrade_downgrade_upgrade(
     postgres_engine: Engine,
     postgres_settings: Settings,
@@ -44,17 +26,16 @@ def test_baseline_upgrade_downgrade_upgrade(
 ) -> None:
     monkeypatch.setenv("DATABASE_URL", postgres_settings.database_url.get_secret_value())
     config = Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
-    assert ScriptDirectory.from_config(config).get_current_head() == BASELINE_REVISION
-    command.upgrade(config, "head")
+    command.upgrade(config, BASELINE_REVISION)
     with postgres_engine.connect() as connection:
         assert MigrationContext.configure(connection).get_current_revision() == BASELINE_REVISION
-    command.current(config, check_heads=True)
+    command.current(config)
     command.downgrade(config, "base")
     with postgres_engine.connect() as connection:
         assert MigrationContext.configure(connection).get_current_revision() is None
-    command.upgrade(config, "head")
-    command.current(config, check_heads=True)
-    command.check(config)
+    command.upgrade(config, BASELINE_REVISION)
+    with postgres_engine.connect() as connection:
+        assert MigrationContext.configure(connection).get_current_revision() == BASELINE_REVISION
     assert inspect(postgres_engine).get_table_names() == ["alembic_version"]
 
 

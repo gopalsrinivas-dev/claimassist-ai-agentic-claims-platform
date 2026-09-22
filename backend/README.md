@@ -1,7 +1,8 @@
 # ClaimAssist backend
 
 Python 3.12+ FastAPI foundation. This package implements operational probes,
-configuration, request telemetry, error handling, and PostgreSQL infrastructure.
+configuration, request telemetry, error handling, PostgreSQL infrastructure,
+and User/Role/UserRole persistence.
 Authentication mechanisms, business services, workers, and AI integrations are outside this foundation.
 
 ## Local setup
@@ -75,7 +76,8 @@ when the corresponding integration is implemented.
 - `app/middleware/`: pure ASGI context, CORS, and unexpected-error boundaries.
 - `app/observability/`: context variables and structured logging.
 - `app/db/`: declarative metadata, shared engine/session factories, readiness, safe telemetry.
-- `alembic/`: migration environment, revision template, and empty foundation revision.
+- `app/identity/`: User, Role, and explicit UserRole association models.
+- `alembic/`: migration environment, empty foundation revision, and identity schema revision.
 
 `GET /health` returns `200 {"status":"ok"}` for a responsive process.
 `GET /ready` runs a read-only connectivity query after lifespan startup. It returns
@@ -108,15 +110,28 @@ this unit of work, or hold transactions across slow external calls. Synchronous
 database operations must not run directly on the async event loop.
 
 `Base.metadata` defines stable names for indexes, primary/foreign keys, unique
-constraints, and explicitly named check constraints. It contains no mapped tables.
-UUID IDs, UTC timestamps and fixed-precision money remain the field dictionary
-contract for future domain models. The foundation adds no columns, entities, or pgvector objects.
+constraints, and explicitly named check constraints. Importing `app.identity.models`
+registers the three identity tables; Alembic imports them explicitly.
+
+`users` has a UUID primary key, unique required email (320 characters), required
+password hash (text) and display name (200 characters), an active flag defaulting
+to true, and required timezone-aware creation/update timestamps. UUIDs are generated
+by the ORM; timestamps default in PostgreSQL, and ORM updates refresh `updated_at`.
+Direct SQL writers must explicitly maintain `updated_at` when changing a user.
+`roles` has a UUID primary key, unique required code (64 characters), and required
+name (120 characters). `user_roles` links them through two required foreign keys
+and a composite primary key `(user_id, role_id)`, with a separate role lookup index.
+Both parents expose `user_roles`; each assignment exposes `user` and `role`.
+Assignments must be explicitly removed before deleting a referenced user or role.
+No roles, users, credentials, or assignments are seeded. Role codes remain data;
+this schema introduces no permission tables or authorization behavior.
 
 Alembic imports the same `Settings`, engine constructor, and metadata. Its INI
 contains no URL, and it does not interpolate credentials through ConfigParser.
 Revision `20260921_0001` intentionally has empty upgrade/downgrade functions.
 Alembic creates its own `alembic_version` table; downgrade to base removes the
-revision row, leaving an empty version table. Only that infrastructure is created.
+revision row, leaving an empty version table. Revision `20260921_0002` creates only
+`users`, `roles`, and `user_roles`; its downgrade removes assignments before parents.
 Migrations run explicitly, never automatically during application startup.
 
 From `backend/`, with the virtual environment activated:
@@ -131,8 +146,12 @@ python -m alembic check
 
 To verify reversibility on a disposable PostgreSQL database, set `DATABASE_URL`
 to that database, run `upgrade head`, `downgrade base`, then `upgrade head`.
-Check that only `alembic_version` exists and its single row is `20260921_0001`.
-Offline downgrade rendering is `python -m alembic downgrade 20260921_0001:base --sql`.
+At head, check that the three identity tables and `alembic_version` exist and the
+version row is `20260921_0002`. Downgrading to `20260921_0001` removes only the identity
+schema; downgrading to base also removes the revision row. Downgrades destroy identity
+data, so use a disposable database for verification.
+Offline identity downgrade rendering is
+`python -m alembic downgrade 20260921_0002:20260921_0001 --sql`.
 
 ## Logs and correlation
 
@@ -237,9 +256,13 @@ python -m pytest --postgres-integration
 
 This runs the entire suite including the PostgreSQL tests. The integration suite
 does not read the developer's dotenv connection implicitly, performs a baseline
-upgrade/downgrade/upgrade, and rejects databases containing business tables or an
-unexpected migration revision. Transaction tests use a connection-local temporary
-table and remove it afterward. Only Alembic's version table persists. The suite
+upgrade/downgrade/upgrade and an identity upgrade/downgrade/upgrade, and rejects
+databases containing business tables or an unexpected migration revision.
+Transaction tests use a connection-local temporary
+table and remove it afterward. Identity tests check relationships, defaults,
+timestamps, uniqueness, required fields, lengths, foreign keys, explicit deletion,
+transaction rollback, safe telemetry, and migration/metadata agreement. They restore
+the baseline after each test. Only Alembic's version table persists. The suite
 uses PostgreSQL exclusively; there is no SQLite substitute.
 Coverage includes branches and enforces at least 80%. Ruff supplies formatting,
 lint and security rules; mypy runs in strict mode on application and test code.

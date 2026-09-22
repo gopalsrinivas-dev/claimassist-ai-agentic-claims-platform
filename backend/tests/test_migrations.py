@@ -12,15 +12,19 @@ from alembic import command
 
 BACKEND = Path(__file__).resolve().parents[1]
 REVISION = "20260921_0001"
+IDENTITY_REVISION = "20260921_0002"
 
 
 def configuration(output: StringIO | None = None) -> Config:
     return Config(str(BACKEND / "alembic.ini"), output_buffer=output)
 
 
-def test_baseline_has_single_head_and_no_schema_operations() -> None:
+def test_baseline_remains_empty_and_identity_is_single_head() -> None:
     scripts = ScriptDirectory.from_config(configuration())
-    assert scripts.get_heads() == [REVISION]
+    assert scripts.get_heads() == [IDENTITY_REVISION]
+    identity = scripts.get_revision(IDENTITY_REVISION)
+    assert identity is not None
+    assert identity.down_revision == REVISION
     revision = scripts.get_revision(REVISION)
     assert revision is not None
     assert revision.down_revision is None
@@ -30,7 +34,7 @@ def test_baseline_has_single_head_and_no_schema_operations() -> None:
 
 def test_postgres_upgrade_and_downgrade_sql() -> None:
     output = StringIO()
-    command.upgrade(configuration(output), "head", sql=True)
+    command.upgrade(configuration(output), REVISION, sql=True)
     sql = output.getvalue()
     assert "CREATE TABLE alembic_version" in sql
     assert f"'{REVISION}'" in sql
@@ -77,3 +81,24 @@ def test_alembic_invalid_configuration_is_safe(monkeypatch: pytest.MonkeyPatch) 
     with pytest.raises(CommandError, match="Invalid application database configuration") as caught:
         command.upgrade(configuration(), "head")
     assert "SYNTHETIC_PRIVATE" not in str(caught.value)
+
+
+def test_identity_migration_sql_contains_only_documented_schema() -> None:
+    output = StringIO()
+    command.upgrade(configuration(output), f"{REVISION}:head", sql=True)
+    sql = output.getvalue()
+    assert sql.count("CREATE TABLE") == 3
+    for table in ("users", "roles", "user_roles"):
+        assert f"CREATE TABLE {table}" in sql
+    assert "PRIMARY KEY (user_id, role_id)" in sql
+    assert "FOREIGN KEY(user_id) REFERENCES users (id)" in sql
+    assert "FOREIGN KEY(role_id) REFERENCES roles (id)" in sql
+    assert "CREATE INDEX ix_user_roles_role_id" in sql
+    assert "INSERT INTO users" not in sql
+    assert "INSERT INTO roles" not in sql
+    output = StringIO()
+    command.downgrade(configuration(output), f"{IDENTITY_REVISION}:{REVISION}", sql=True)
+    sql = output.getvalue()
+    assert sql.count("DROP TABLE") == 3
+    assert sql.index("DROP TABLE user_roles") < sql.index("DROP TABLE roles")
+    assert sql.index("DROP TABLE user_roles") < sql.index("DROP TABLE users")
