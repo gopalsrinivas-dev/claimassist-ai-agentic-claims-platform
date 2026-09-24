@@ -1,4 +1,4 @@
-"""Create document/evidence persistence; vector storage is deferred to Day 25.
+"""Create document/evidence persistence; vector storage is intentionally deferred until the embedding contract is finalized.
 
 Revision ID: 20260924_0004
 Revises: 20260922_0003
