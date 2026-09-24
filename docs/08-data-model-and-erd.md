@@ -108,10 +108,17 @@ Unique/dedup option:
 - `effective_from`
 - `effective_to`
 - `document_sha256`
-- `index_status`
+- `index_status enum PENDING|INDEXING|READY|FAILED NOT NULL DEFAULT PENDING`
 - timestamps
 
 Constraint: effective ranges must be valid; retrieval always scopes by `policy_version_id`.
+
+Index status records readiness: `PENDING` means indexing has not started;
+`INDEXING` means ingestion/embedding/index validation is in progress;
+`READY` means indexing was successfully validated and is usable for retrieval;
+`FAILED` means indexing failed and requires retry/investigation.
+No other index states are allowed. The core domain schema only persists the status;
+it does not implement indexing or retrieval.
 
 ### policy_chunks
 - `id UUID PK`

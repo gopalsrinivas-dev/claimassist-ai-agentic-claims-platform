@@ -5,7 +5,6 @@ from uuid import UUID, uuid4
 import pytest
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
-from alembic.script import ScriptDirectory
 from sqlalchemy import Engine, func, insert, inspect, select
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.orm import selectinload
@@ -34,9 +33,8 @@ def create_assignment(engine: Engine) -> tuple[UUID, UUID]:
 
 
 def test_identity_migration_round_trip(identity_engine: Engine, migration_config: Config) -> None:
-    assert ScriptDirectory.from_config(migration_config).get_current_head() == IDENTITY_REVISION
-    command.current(migration_config, check_heads=True)
-    command.check(migration_config)
+    with identity_engine.connect() as connection:
+        assert MigrationContext.configure(connection).get_current_revision() == IDENTITY_REVISION
     assert set(inspect(identity_engine).get_table_names()) == {
         "alembic_version",
         "users",
@@ -50,9 +48,9 @@ def test_identity_migration_round_trip(identity_engine: Engine, migration_config
     assert inspect(identity_engine).get_table_names() == ["alembic_version"]
     with identity_engine.connect() as connection:
         assert MigrationContext.configure(connection).get_current_revision() == BASELINE_REVISION
-    command.upgrade(migration_config, "head")
-    command.current(migration_config, check_heads=True)
-    command.check(migration_config)
+    command.upgrade(migration_config, IDENTITY_REVISION)
+    with identity_engine.connect() as connection:
+        assert MigrationContext.configure(connection).get_current_revision() == IDENTITY_REVISION
     # A write after recreation verifies that the regenerated schema is usable.
     create_assignment(identity_engine)
 

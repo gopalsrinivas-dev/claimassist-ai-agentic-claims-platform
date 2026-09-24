@@ -1,4 +1,4 @@
-"""Explicit disposable PostgreSQL targets; identity tests restore the baseline."""
+"""Explicit disposable PostgreSQL targets; schema tests restore the baseline."""
 
 from collections.abc import Iterator
 from pathlib import Path
@@ -40,6 +40,16 @@ def migration_config(postgres_settings: Settings, monkeypatch: pytest.MonkeyPatc
 @pytest.fixture
 def identity_engine(postgres_engine: Engine, migration_config: Config) -> Iterator[Engine]:
     # The baseline-only guard must pass before any schema is modified.
+    command.upgrade(migration_config, "20260921_0002")
+    try:
+        yield postgres_engine
+    finally:
+        command.downgrade(migration_config, BASELINE_REVISION)
+
+
+@pytest.fixture
+def domain_engine(postgres_engine: Engine, migration_config: Config) -> Iterator[Engine]:
+    # The same baseline-only guard protects every migration test target.
     command.upgrade(migration_config, "head")
     try:
         yield postgres_engine

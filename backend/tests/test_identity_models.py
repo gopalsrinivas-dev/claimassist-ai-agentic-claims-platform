@@ -11,7 +11,11 @@ SYNTHETIC_HASH = "SYNTHETIC_HASH"
 
 
 def test_identity_metadata_contract() -> None:
-    assert set(Base.metadata.tables) == {"users", "roles", "user_roles"}
+    assert {User.__tablename__, Role.__tablename__, UserRole.__tablename__} == {
+        "users",
+        "roles",
+        "user_roles",
+    }
     users = Base.metadata.tables["users"]
     roles = Base.metadata.tables["roles"]
     assignments = Base.metadata.tables["user_roles"]

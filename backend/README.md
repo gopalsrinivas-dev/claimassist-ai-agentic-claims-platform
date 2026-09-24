@@ -2,7 +2,7 @@
 
 Python 3.12+ FastAPI foundation. This package implements operational probes,
 configuration, request telemetry, error handling, PostgreSQL infrastructure,
-and User/Role/UserRole persistence.
+and identity and core healthcare-claims persistence.
 Authentication mechanisms, business services, workers, and AI integrations are outside this foundation.
 
 ## Local setup
@@ -77,7 +77,8 @@ when the corresponding integration is implemented.
 - `app/observability/`: context variables and structured logging.
 - `app/db/`: declarative metadata, shared engine/session factories, readiness, safe telemetry.
 - `app/identity/`: User, Role, and explicit UserRole association models.
-- `alembic/`: migration environment, empty foundation revision, and identity schema revision.
+- `app/domain/`: Member, Provider, Policy, PolicyVersion, Claim, and ClaimLine models.
+- `alembic/`: migration environment and foundation, identity, and core domain revisions.
 
 `GET /health` returns `200 {"status":"ok"}` for a responsive process.
 `GET /ready` runs a read-only connectivity query after lifespan startup. It returns
@@ -111,7 +112,8 @@ database operations must not run directly on the async event loop.
 
 `Base.metadata` defines stable names for indexes, primary/foreign keys, unique
 constraints, and explicitly named check constraints. Importing `app.identity.models`
-registers the three identity tables; Alembic imports them explicitly.
+registers the three identity tables; `app.domain.models` registers the six domain
+tables. Alembic imports both explicitly.
 
 `users` has a UUID primary key, unique required email (320 characters), required
 password hash (text) and display name (200 characters), an active flag defaulting
@@ -126,12 +128,31 @@ Assignments must be explicitly removed before deleting a referenced user or role
 No roles, users, credentials, or assignments are seeded. Role codes remain data;
 this schema introduces no permission tables or authorization behavior.
 
+The core domain links each claim to a member, provider, policy version, and creator
+user; each policy owns versions and each claim owns lines. UUID primary keys,
+foreign keys, documented unique keys, valid date ranges, and positive claim totals
+are enforced in PostgreSQL. Money uses `Decimal` / `NUMERIC(14,2)`. Claim lookup
+indexes cover status/creation time, member/service date, provider/service date,
+and policy version. Referenced parents cannot be deleted until children are removed.
+All domain entities except claim lines have creation/update timestamps, with the
+same ORM update and direct SQL responsibilities as users.
+
+`PolicyVersion.index_status` permits only `PENDING`, `INDEXING`, `READY`, and
+`FAILED`, is required, and defaults to `PENDING` in the ORM and database.
+Claim ORM updates/deletes check `row_version`, and updates increment it; stale writes raise
+`StaleDataError` and the shared transaction boundary rolls back. `claim_version`
+is independent. Bulk SQL writers must explicitly check row versions. This schema
+adds no API, workflow transition service, indexing worker, or document processing.
+
 Alembic imports the same `Settings`, engine constructor, and metadata. Its INI
 contains no URL, and it does not interpolate credentials through ConfigParser.
 Revision `20260921_0001` intentionally has empty upgrade/downgrade functions.
 Alembic creates its own `alembic_version` table; downgrade to base removes the
 revision row, leaving an empty version table. Revision `20260921_0002` creates only
 `users`, `roles`, and `user_roles`; its downgrade removes assignments before parents.
+Revision `20260922_0003` adds `members`, `providers`, `policies`, `policy_versions`,
+`claims`, and `claim_lines`, plus the claim and policy index status enum types.
+Its downgrade removes only those six tables and their enum types, preserving identity data.
 Migrations run explicitly, never automatically during application startup.
 
 From `backend/`, with the virtual environment activated:
@@ -146,10 +167,11 @@ python -m alembic check
 
 To verify reversibility on a disposable PostgreSQL database, set `DATABASE_URL`
 to that database, run `upgrade head`, `downgrade base`, then `upgrade head`.
-At head, check that the three identity tables and `alembic_version` exist and the
-version row is `20260921_0002`. Downgrading to `20260921_0001` removes only the identity
-schema; downgrading to base also removes the revision row. Downgrades destroy identity
-data, so use a disposable database for verification.
+At head, check that the nine identity/domain tables and `alembic_version` exist and
+the version row is `20260922_0003`. Downgrading to `20260921_0002` removes the domain
+schema; downgrading to `20260921_0001` also removes identity tables. Downgrading to
+base also removes the revision row. Downgrades destroy data in removed tables,
+so use a disposable database for verification.
 Offline identity downgrade rendering is
 `python -m alembic downgrade 20260921_0002:20260921_0001 --sql`.
 
@@ -256,13 +278,17 @@ python -m pytest --postgres-integration
 
 This runs the entire suite including the PostgreSQL tests. The integration suite
 does not read the developer's dotenv connection implicitly, performs a baseline
-upgrade/downgrade/upgrade and an identity upgrade/downgrade/upgrade, and rejects
+upgrade/downgrade/upgrade and identity and domain upgrade/downgrade/upgrade, and rejects
 databases containing business tables or an unexpected migration revision.
 Transaction tests use a connection-local temporary
 table and remove it afterward. Identity tests check relationships, defaults,
 timestamps, uniqueness, required fields, lengths, foreign keys, explicit deletion,
 transaction rollback, safe telemetry, and migration/metadata agreement. They restore
-the baseline after each test. Only Alembic's version table persists. The suite
+the baseline after each test. Domain tests additionally verify exact money,
+date and amount constraints, enum values/defaults, stale updates/deletes, and
+identity preservation during domain downgrade. `alembic check` verifies metadata
+agreement before and after the domain round trip.
+Only Alembic's version table persists. The suite
 uses PostgreSQL exclusively; there is no SQLite substitute.
 Coverage includes branches and enforces at least 80%. Ruff supplies formatting,
 lint and security rules; mypy runs in strict mode on application and test code.

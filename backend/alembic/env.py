@@ -12,6 +12,7 @@ from alembic import context
 from app.core.config import Settings
 from app.db.base import Base
 from app.db.session import create_database_engine
+from app.domain import models as domain_models  # noqa: F401 -- register domain tables
 from app.identity import models  # noqa: F401 -- register identity tables in shared metadata
 from app.observability.logging import configure_logging
 

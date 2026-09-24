@@ -13,15 +13,19 @@ from alembic import command
 BACKEND = Path(__file__).resolve().parents[1]
 REVISION = "20260921_0001"
 IDENTITY_REVISION = "20260921_0002"
+DOMAIN_REVISION = "20260922_0003"
 
 
 def configuration(output: StringIO | None = None) -> Config:
     return Config(str(BACKEND / "alembic.ini"), output_buffer=output)
 
 
-def test_baseline_remains_empty_and_identity_is_single_head() -> None:
+def test_baseline_remains_empty_and_domain_is_single_head() -> None:
     scripts = ScriptDirectory.from_config(configuration())
-    assert scripts.get_heads() == [IDENTITY_REVISION]
+    assert scripts.get_heads() == [DOMAIN_REVISION]
+    domain = scripts.get_revision(DOMAIN_REVISION)
+    assert domain is not None
+    assert domain.down_revision == IDENTITY_REVISION
     identity = scripts.get_revision(IDENTITY_REVISION)
     assert identity is not None
     assert identity.down_revision == REVISION
@@ -85,7 +89,7 @@ def test_alembic_invalid_configuration_is_safe(monkeypatch: pytest.MonkeyPatch) 
 
 def test_identity_migration_sql_contains_only_documented_schema() -> None:
     output = StringIO()
-    command.upgrade(configuration(output), f"{REVISION}:head", sql=True)
+    command.upgrade(configuration(output), f"{REVISION}:{IDENTITY_REVISION}", sql=True)
     sql = output.getvalue()
     assert sql.count("CREATE TABLE") == 3
     for table in ("users", "roles", "user_roles"):
@@ -102,3 +106,29 @@ def test_identity_migration_sql_contains_only_documented_schema() -> None:
     assert sql.count("DROP TABLE") == 3
     assert sql.index("DROP TABLE user_roles") < sql.index("DROP TABLE roles")
     assert sql.index("DROP TABLE user_roles") < sql.index("DROP TABLE users")
+
+
+def test_domain_migration_sql_contains_only_core_schema() -> None:
+    output = StringIO()
+    command.upgrade(configuration(output), f"{IDENTITY_REVISION}:{DOMAIN_REVISION}", sql=True)
+    sql = output.getvalue()
+    assert sql.count("CREATE TABLE") == 6
+    for table in ("members", "providers", "policies", "policy_versions", "claims", "claim_lines"):
+        assert f"CREATE TABLE {table}" in sql
+    assert (
+        "CREATE TYPE policy_index_status AS ENUM ('PENDING', 'INDEXING', 'READY', 'FAILED')" in sql
+    )
+    assert "DEFAULT 'PENDING' NOT NULL" in sql
+    assert "CHECK (claimed_amount > 0)" in sql
+    assert "CHECK (service_end_date >= service_start_date)" in sql
+    assert "CHECK (effective_to IS NULL OR effective_to >= effective_from)" in sql
+    output = StringIO()
+    command.downgrade(configuration(output), f"{DOMAIN_REVISION}:{IDENTITY_REVISION}", sql=True)
+    sql = output.getvalue()
+    assert sql.count("DROP TABLE") == 6
+    assert sql.index("DROP TABLE claim_lines") < sql.index("DROP TABLE claims")
+    assert sql.index("DROP TABLE claims") < sql.index("DROP TABLE policy_versions")
+    assert sql.index("DROP TABLE policy_versions") < sql.index("DROP TABLE policies")
+    assert "DROP TYPE claim_status" in sql
+    assert "DROP TYPE policy_index_status" in sql
+    assert "DROP TABLE users" not in sql

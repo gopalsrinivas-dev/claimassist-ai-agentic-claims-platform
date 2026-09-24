@@ -68,9 +68,18 @@ Composite uniqueness on `(user_id, role_id)`.
 - effective_from date not null
 - effective_to date nullable
 - document_sha256 char(64) not null
-- index_status enum not null
+- index_status enum `PENDING|INDEXING|READY|FAILED` not null default `PENDING`
 - created_at/updated_at
 - unique `(policy_id, version_code)`
+
+Policy index status semantics (no additional states):
+- `PENDING`: indexing not started.
+- `INDEXING`: ingestion, embedding, and index validation in progress.
+- `READY`: indexing successfully validated and usable for retrieval.
+- `FAILED`: indexing failed and requires retry/investigation.
+
+The domain schema stores this status only; indexing workers and retrieval behavior
+are outside the core domain model implementation.
 
 ## claims
 
