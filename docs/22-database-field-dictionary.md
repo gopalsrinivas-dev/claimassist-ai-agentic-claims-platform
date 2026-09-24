@@ -121,16 +121,29 @@ Indexes:
 
 - id UUID PK
 - claim_id UUID FK not null
-- document_type enum not null
+- document_type enum `CLAIM_FORM|HOSPITAL_BILL|DISCHARGE_SUMMARY|PRESCRIPTION|INVESTIGATION_REPORT|IMPLANT_INVOICE` not null
 - original_filename varchar not null
 - object_key text unique not null
 - sha256 char(64) not null
 - content_type varchar not null
 - size_bytes bigint not null
-- processing_status enum not null
+- processing_status enum `UPLOADED|PROCESSING|EXTRACTED|FAILED` not null default `UPLOADED`
 - uploaded_by UUID FK users not null
 - created_at/updated_at
 - unique `(claim_id, sha256)`
+
+These are the complete claim document enum values. `POLICY_DOCUMENT` is excluded:
+policy documents belong to the PolicyVersion / policy-ingestion path.
+Processing status semantics:
+- `UPLOADED`: document metadata/file persisted; extraction has not started.
+- `PROCESSING`: document extraction/processing is in progress.
+- `EXTRACTED`: processing completed successfully.
+- `FAILED`: processing failed and may be retried later.
+
+The ORM and database both default processing status to `UPLOADED`. Persisting this
+status does not implement storage or extraction behavior. Referenced claims, users,
+documents, and policy versions cannot be deleted while evidence references remain;
+there are no evidence delete cascades. Binary document contents stay outside PostgreSQL.
 
 ## extracted_facts
 
@@ -154,9 +167,16 @@ Indexes:
 - page integer nullable
 - chunk_text text not null
 - chunk_hash char(64) not null
-- embedding vector(dimension chosen by configured embedding model)
+- No embedding field in the document/evidence foundation. Exact vector dimension
+  and storage contract are intentionally deferred to Day 25.
 - metadata jsonb not null default `{}`
 - unique `(policy_version_id, chunk_hash)`
+
+The ORM exposes the database `metadata` column as `metadata_json` because
+`metadata` is reserved by SQLAlchemy. Its Python default creates a fresh dictionary
+per row; the database default is an empty JSONB object. Policy chunks have no
+timestamp columns in this contract. JSON fields preserve JSON values without
+executing or interpreting their contents.
 
 ## eligibility_checks
 

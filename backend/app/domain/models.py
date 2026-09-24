@@ -7,8 +7,10 @@ from decimal import Decimal
 from enum import StrEnum
 from uuid import UUID, uuid4
 
+from pydantic import JsonValue
 from sqlalchemy import (
     CHAR,
+    BigInteger,
     CheckConstraint,
     Date,
     DateTime,
@@ -24,6 +26,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -45,6 +48,22 @@ class PolicyIndexStatus(StrEnum):
     PENDING = "PENDING"
     INDEXING = "INDEXING"
     READY = "READY"
+    FAILED = "FAILED"
+
+
+class DocumentType(StrEnum):
+    CLAIM_FORM = "CLAIM_FORM"
+    HOSPITAL_BILL = "HOSPITAL_BILL"
+    DISCHARGE_SUMMARY = "DISCHARGE_SUMMARY"
+    PRESCRIPTION = "PRESCRIPTION"
+    INVESTIGATION_REPORT = "INVESTIGATION_REPORT"
+    IMPLANT_INVOICE = "IMPLANT_INVOICE"
+
+
+class DocumentProcessingStatus(StrEnum):
+    UPLOADED = "UPLOADED"
+    PROCESSING = "PROCESSING"
+    EXTRACTED = "EXTRACTED"
     FAILED = "FAILED"
 
 
@@ -111,6 +130,9 @@ class PolicyVersion(Timestamps, Base):
     )
 
     policy: Mapped[Policy] = relationship(back_populates="versions")
+    chunks: Mapped[list[PolicyChunk]] = relationship(
+        back_populates="policy_version", passive_deletes="all"
+    )
     claims: Mapped[list[Claim]] = relationship(
         back_populates="policy_version", passive_deletes="all"
     )
@@ -151,6 +173,9 @@ class Claim(Timestamps, Base):
     policy_version: Mapped[PolicyVersion] = relationship(back_populates="claims")
     creator: Mapped[User] = relationship()
     lines: Mapped[list[ClaimLine]] = relationship(back_populates="claim", passive_deletes="all")
+    documents: Mapped[list[ClaimDocument]] = relationship(
+        back_populates="claim", passive_deletes="all"
+    )
 
 
 class ClaimLine(Base):
@@ -166,3 +191,68 @@ class ClaimLine(Base):
     procedure_code: Mapped[str | None] = mapped_column(String)
 
     claim: Mapped[Claim] = relationship(back_populates="lines")
+
+
+class ClaimDocument(Timestamps, Base):
+    __tablename__ = "claim_documents"
+    __table_args__ = (UniqueConstraint("claim_id", "sha256"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    claim_id: Mapped[UUID] = mapped_column(ForeignKey("claims.id"))
+    document_type: Mapped[DocumentType] = mapped_column(
+        Enum(DocumentType, name="claim_document_type", validate_strings=True)
+    )
+    original_filename: Mapped[str] = mapped_column(String)
+    object_key: Mapped[str] = mapped_column(Text, unique=True)
+    sha256: Mapped[str] = mapped_column(CHAR(64))
+    content_type: Mapped[str] = mapped_column(String)
+    size_bytes: Mapped[int] = mapped_column(BigInteger)
+    processing_status: Mapped[DocumentProcessingStatus] = mapped_column(
+        Enum(DocumentProcessingStatus, name="document_processing_status", validate_strings=True),
+        default=DocumentProcessingStatus.UPLOADED,
+        server_default=text("'UPLOADED'"),
+        nullable=False,
+    )
+    uploaded_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
+
+    claim: Mapped[Claim] = relationship(back_populates="documents")
+    uploader: Mapped[User] = relationship()
+    facts: Mapped[list[ExtractedFact]] = relationship(
+        back_populates="claim_document", passive_deletes="all"
+    )
+
+
+class ExtractedFact(Base):
+    __tablename__ = "extracted_facts"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    claim_document_id: Mapped[UUID] = mapped_column(ForeignKey("claim_documents.id"))
+    fact_type: Mapped[str] = mapped_column(String)
+    value_json: Mapped[JsonValue] = mapped_column(JSONB, nullable=False)
+    normalized_value: Mapped[str | None] = mapped_column(Text)
+    source_page: Mapped[int | None] = mapped_column(Integer)
+    source_span: Mapped[str | None] = mapped_column(Text)
+    extractor_version: Mapped[str] = mapped_column(String)
+    confidence: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    claim_document: Mapped[ClaimDocument] = relationship(back_populates="facts")
+
+
+class PolicyChunk(Base):
+    __tablename__ = "policy_chunks"
+    __table_args__ = (UniqueConstraint("policy_version_id", "chunk_hash"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    policy_version_id: Mapped[UUID] = mapped_column(ForeignKey("policy_versions.id"))
+    section: Mapped[str | None] = mapped_column(String)
+    clause_id: Mapped[str | None] = mapped_column(String)
+    page: Mapped[int | None] = mapped_column(Integer)
+    chunk_text: Mapped[str] = mapped_column(Text)
+    chunk_hash: Mapped[str] = mapped_column(CHAR(64))
+    # SQLAlchemy reserves `metadata`; keep the documented database column name.
+    metadata_json: Mapped[dict[str, JsonValue]] = mapped_column(
+        "metadata", JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+
+    policy_version: Mapped[PolicyVersion] = relationship(back_populates="chunks")

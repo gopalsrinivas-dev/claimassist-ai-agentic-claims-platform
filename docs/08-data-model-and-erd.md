@@ -37,6 +37,7 @@ erDiagram
     POLICY_VERSION ||--o{ CLAIM : applies_to
     CLAIM ||--o{ CLAIM_LINE : contains
     CLAIM ||--o{ CLAIM_DOCUMENT : has
+    USER ||--o{ CLAIM_DOCUMENT : uploads
     CLAIM_DOCUMENT ||--o{ EXTRACTED_FACT : yields
     POLICY_VERSION ||--o{ POLICY_CHUNK : indexed_as
     CLAIM ||--o{ ELIGIBILITY_CHECK : checked_by
@@ -77,17 +78,25 @@ Indexes:
 ### claim_documents
 - `id UUID PK`
 - `claim_id FK`
-- `document_type`
+- `document_type enum CLAIM_FORM|HOSPITAL_BILL|DISCHARGE_SUMMARY|PRESCRIPTION|INVESTIGATION_REPORT|IMPLANT_INVOICE NOT NULL`
+- `original_filename`
 - `object_key`
 - `sha256`
 - `content_type`
 - `size_bytes`
-- `processing_status`
+- `processing_status enum UPLOADED|PROCESSING|EXTRACTED|FAILED NOT NULL DEFAULT UPLOADED`
 - `uploaded_by`
 - timestamps
 
-Unique/dedup option:
+Required uniqueness:
+- `object_key`
 - `(claim_id, sha256)`
+
+Claim document types exclude `POLICY_DOCUMENT`; policy documents belong to the
+PolicyVersion / policy-ingestion path. Processing statuses mean persisted but not
+started (`UPLOADED`), in progress (`PROCESSING`), successful (`EXTRACTED`), or failed
+and eligible for later retry (`FAILED`). Only persistence is implemented here.
+Evidence references prevent parent deletion; no implicit delete cascades are allowed.
 
 ### extracted_facts
 - `id UUID PK`
@@ -99,7 +108,7 @@ Unique/dedup option:
 - `source_span`
 - `extractor_version`
 - `confidence`
-- timestamps
+- `created_at` (no update timestamp)
 
 ### policy_versions
 - `id UUID PK`
@@ -127,9 +136,14 @@ it does not implement indexing or retrieval.
 - `clause_id`
 - `page`
 - `chunk_text`
-- `embedding vector(...)`
+- Embedding is omitted from the document/evidence foundation; its exact vector
+  dimension/storage contract is intentionally deferred to Day 25.
 - `chunk_hash`
 - metadata JSONB
+
+Required uniqueness: `(policy_version_id, chunk_hash)`. Metadata is required and
+defaults to `{}`; the ORM attribute is `metadata_json`. No timestamp or embedding
+columns are added to this table in Day 15.
 
 ### agent_runs
 - `id UUID PK`

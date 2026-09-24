@@ -30,6 +30,7 @@ from app.observability.logging import configure_logging
 pytestmark = pytest.mark.postgres_integration
 IDENTITY_REVISION = "20260921_0002"
 DOMAIN_REVISION = "20260922_0003"
+EVIDENCE_REVISION = "20260924_0004"
 DOMAIN_MODELS = (Member, Provider, Policy, PolicyVersion, Claim, ClaimLine)
 SYNTHETIC_HASH = "SYNTHETIC_HASH"
 
@@ -71,7 +72,7 @@ def persist_claim(engine: Engine) -> UUID:
 
 def test_domain_migration_round_trip(domain_engine: Engine, migration_config: Config) -> None:
     with domain_engine.connect() as connection:
-        assert MigrationContext.configure(connection).get_current_revision() == DOMAIN_REVISION
+        assert MigrationContext.configure(connection).get_current_revision() == EVIDENCE_REVISION
     command.current(migration_config, check_heads=True)
     command.check(migration_config)
     assert set(inspect(domain_engine).get_table_names()) == {
@@ -85,6 +86,9 @@ def test_domain_migration_round_trip(domain_engine: Engine, migration_config: Co
         "policy_versions",
         "claims",
         "claim_lines",
+        "claim_documents",
+        "extracted_facts",
+        "policy_chunks",
     }
     claim_id = persist_claim(domain_engine)
     with transaction(create_session_factory(domain_engine)) as session:

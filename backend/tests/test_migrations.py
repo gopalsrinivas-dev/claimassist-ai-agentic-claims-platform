@@ -14,15 +14,19 @@ BACKEND = Path(__file__).resolve().parents[1]
 REVISION = "20260921_0001"
 IDENTITY_REVISION = "20260921_0002"
 DOMAIN_REVISION = "20260922_0003"
+EVIDENCE_REVISION = "20260924_0004"
 
 
 def configuration(output: StringIO | None = None) -> Config:
     return Config(str(BACKEND / "alembic.ini"), output_buffer=output)
 
 
-def test_baseline_remains_empty_and_domain_is_single_head() -> None:
+def test_baseline_remains_empty_and_evidence_is_single_head() -> None:
     scripts = ScriptDirectory.from_config(configuration())
-    assert scripts.get_heads() == [DOMAIN_REVISION]
+    assert scripts.get_heads() == [EVIDENCE_REVISION]
+    evidence = scripts.get_revision(EVIDENCE_REVISION)
+    assert evidence is not None
+    assert evidence.down_revision == DOMAIN_REVISION
     domain = scripts.get_revision(DOMAIN_REVISION)
     assert domain is not None
     assert domain.down_revision == IDENTITY_REVISION
